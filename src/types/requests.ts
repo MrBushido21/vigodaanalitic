@@ -1,5 +1,7 @@
 import { UtmI } from "./sessionShema";
 
+export type EventTypeT = "click" | "scroll" | "cart_add" | "cart_remove"
+
 export interface PageviewI {
     visitorId: string,
     url: string,
@@ -12,7 +14,7 @@ export interface PageviewI {
 export interface EventI {
     visitorId: string,
     sessionId: string,
-    type: "click" | "scroll" | "cart_add" | "cart_remove",
+    type: EventTypeT,
     url: string,
     payload: string
 }

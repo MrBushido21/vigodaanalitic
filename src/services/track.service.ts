@@ -1,10 +1,12 @@
 import { EventI, OrderI, PageviewI } from "../types/requests";
 import { Events } from "../db/event.model";
 import { Stats } from "../db/stats.model";
-import { getToday } from "../utils/utils";
+import { classifyReferrer, getToday } from "../utils/utils";
 import { isBot } from "ua-parser-js/bot-detection";
 import { UAParser } from "ua-parser-js";
 import geoip from 'geoip-lite'
+import { Visitors } from "../db/visitor.model";
+import { Sessions } from "../db/session.model";
 
 export const trackEvent = async (event: EventI) => {
     try {
@@ -17,55 +19,195 @@ export const trackEvent = async (event: EventI) => {
     }
 }
 
-// trackOrder — простой:
-//   1. Найти документ Stats за сегодня
-//   2. Инкрементировать orders.total
-//   3. Инкрементировать orders.confirmed или orders.cancelled
-//   4. Если документа нет — создать новый
 
 export const trackOrder = async (orderStatus: OrderI) => {
-    const today = getToday()
-    const field = orderStatus.status === "confirmed" ? "orders.confirmed" : "orders.cancelled"
+    try {
+        const today = getToday()
+        const field = orderStatus.status === "confirmed" ? "orders.confirmed" : "orders.cancelled"
 
-    await Stats.findOneAndUpdate(
-        { date: today },
-        { $inc: { "orders.total": 1, [field]: 1 } },
-        { upsert: true, new: true }
-    )
+        await Stats.findOneAndUpdate(
+            { date: today },
+            { $inc: { "orders.total": 1, [field]: 1 } },
+            { upsert: true, returnDocument: 'after' }
+        )
+    } catch (error) {
+        console.error(error);
+    }
 }
 
-// 1. Проверить isBot по userAgent                                                                      
-//      → если бот: сохранить сессию с isBot: true и выйти                                                
-                                                                                                       
-//   2. Распарсить userAgent (ua-parser-js)                                                               
-//      → достать browser, os, device.type
-                                                                                                       
-//   3. Распарсить IP (geoip-lite)
-//      → достать country, city
-
-//   4. Найти visitor по visitorId
-//      → если не найден: создать нового (firstSeen = now, totalSessions = 1, isReturning = false)
-//      → если найден: обновить lastSeen, totalSessions + 1, isReturning = true
-
-//   5. Найти активную сессию
-//      → активная = та же visitorId + endTime не установлен
-//      → если не найдена: создать новую сессию
-//      → если найдена: добавить страницу в pages[]
-
-//   6. Обновить страницу в сессии
-//      → push { url, enteredAt: now, timeSpent: 0 }
-//      → предыдущей странице в массиве проставить timeSpent
 
 export const trackPageview = async (body: PageviewI) => {
-    //Проверить isBot по userAgent
-    const isbot = isBot(body.userAgent)
-    //Распарсить userAgent (ua-parser-js)
-    const parser = new UAParser(body.userAgent)                                                               
-    const result = parser.getResult()
-    // result.browser.name  → "Chrome"                                                                   
-  // result.os.name       → "Windows"                                                                  
-  // result.device.type   → "mobile" | "tablet" | undefined (undefined = desktop)
 
-  //Распарсить IP (geoip-lite)
-  const geo = geoip.lookup(body.ip)
-} 
+    const isbot = isBot(body.userAgent)
+    const result = new UAParser(body.userAgent).getResult()
+    const geo = geoip.lookup(body.ip)
+
+    try {
+        const existingVisitor = await Visitors.findOne({ visitorId: body.visitorId })
+        await Visitors.findOneAndUpdate(
+            { visitorId: body.visitorId },
+            {
+                $set: { "lastSeen": new Date(), isReturning: !!existingVisitor },
+                $setOnInsert: { visitorId: body.visitorId, firstSeen: new Date(), country: geo?.country, city: geo?.city }
+            },
+            { upsert: true, returnDocument: 'after' }
+        )
+        const idleLimit = new Date(Date.now() - 30 * 60 * 1000)
+        await Sessions.updateMany(
+            { visitorId: body.visitorId, endTime: null, lastActivity: { $lt: idleLimit } },
+            { $set: { endTime: new Date() } }
+        )
+
+        const session = await Sessions.findOne({ visitorId: body.visitorId, endTime: null, lastActivity: { $gte: idleLimit } })
+
+        if (session) {
+            const sessionPages = session.toObject().pages
+            const lastPage = sessionPages[sessionPages.length - 1]
+            lastPage.timeSpent = Math.round((new Date().getTime() - new Date(lastPage.enteredAt!).getTime()) / 1000)
+            sessionPages.push({ url: body.url, enteredAt: new Date(), timeSpent: null })
+
+            const updated = await Sessions.findOneAndUpdate(
+                { _id: session._id },
+                { $set: { pages: sessionPages, lastActivity: new Date() } },
+                { returnDocument: 'after' }
+            )
+            return updated!._id
+        }
+
+        const newSession = await Sessions.create({
+            visitorId: body.visitorId,
+            startTime: new Date(),
+            endTime: null,
+            duration: null,
+            isBot: isbot,
+            location: geo ? { country: geo.country, city: geo.city } : {},
+            device: { type: result.device.type ?? 'desktop', os: result.os.name, browser: result.browser.name },
+            pages: [{ url: body.url, enteredAt: new Date(), timeSpent: null }],
+            lastActivity: new Date(),
+            referrer: body.referrer,
+            referrerType: classifyReferrer(body.referrer),
+            utm: { source: body.utm?.source, medium: body.utm?.medium, campaign: body.utm?.campaign }
+        })
+        await Visitors.findOneAndUpdate(
+            { visitorId: body.visitorId },
+            { $inc: { totalSessions: 1 } }
+        )
+        return newSession._id
+    } catch (error) {
+        console.error('[trackPageview error]', error);
+        throw error
+    }
+}
+
+export const trackEndSession = async (sessionId: string) => {
+    try {
+        const session = await Sessions.findOne({ _id: sessionId })
+        const duration = Math.round((new Date().getTime() - new Date(session!.startTime!).getTime()) / 1000)
+        await Sessions.findOneAndUpdate(
+            { _id: sessionId },
+            { $set: { endTime: new Date(), duration } },
+            { returnDocument: 'after' }
+        )
+    } catch (error) {
+        console.error(error);
+    }
+}
+
+export const getCurrentOnline = async () => {
+    try {
+        const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000)
+        const count = await Sessions.countDocuments({ lastActivity: { $gte: fiveMinutesAgo } })
+        return count
+    } catch (error: any) {
+        console.error(error);
+        throw new Error(error)
+    }
+}
+
+export const getVisitors = async () => {
+    const today = getToday()
+    const total = await Visitors.countDocuments()
+    const newToday = await Visitors.countDocuments({ firstSeen: { $gte: today } })
+    const returningToday = await Visitors.countDocuments({ isReturning: true, lastSeen: { $gte: today } })
+    return { total, newToday, returningToday }
+}
+
+export const getSources = async () => {
+    const today = getToday()
+    const sessions = await Sessions.find({ startTime: { $gte: today } }, { referrerType: 1 })
+    const counts: Record<string, number> = { direct: 0, search: 0, social: 0, referral: 0 }
+    for (const s of sessions) {
+        const type = s.referrerType ?? 'direct'
+        if (type in counts) counts[type]++
+    }
+    return counts
+}
+
+export const getDevices = async () => {
+    const today = getToday()
+    const sessions = await Sessions.find({ startTime: { $gte: today } }, { 'device.type': 1 })
+    const counts: Record<string, number> = { desktop: 0, mobile: 0, tablet: 0 }
+    for (const s of sessions) {
+        const type = s.device?.type ?? 'desktop'
+        if (type in counts) counts[type]++
+    }
+    return counts
+}
+
+export const getFunnel = async () => {
+    const productViews = await Sessions.countDocuments({ 'pages.url': /^\/product\// })
+    const cartAdds = await Events.countDocuments({ type: 'cart_add' })
+    const checkouts = await Sessions.countDocuments({ 'pages.url': '/order' })
+
+    const topClicked = await Sessions.aggregate([
+        { $unwind: '$pages' },
+        { $match: { 'pages.url': /^\/product\// } },
+        { $group: { _id: '$pages.url', count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+        { $limit: 8 },
+        { $project: { _id: 0, url: '$_id', count: 1 } }
+    ])
+
+    const topSearches = await Events.aggregate([
+        { $match: { type: 'search', payload: { $exists: true, $ne: '' } } },
+        { $group: { _id: '$payload', count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+        { $limit: 8 },
+        { $project: { _id: 0, query: '$_id', count: 1 } }
+    ])
+
+    return { productViews, cartAdds, checkouts, topClicked, topSearches }
+}
+
+export type StatsPeriod = 'today' | 'week' | 'month' | 'year'
+
+export const getStats = async (param: StatsPeriod) => {
+    const week = new Date(Date.now() - 1000 * 60 * 60 * 24 * 7)
+    const month = new Date(Date.now() - 1000 * 60 * 60 * 24 * 30)
+    const year = new Date(Date.now() - 1000 * 60 * 60 * 24 * 365)
+    let stat
+    try {
+        switch (param) {
+            case "today":
+                stat = await Stats.findOne({date: getToday()})
+                break;
+            case "week":
+                stat = await Stats.find({date: {$gte: week}})
+                break;
+            case "month":
+                stat = await Stats.find({ date: { $gte: month } })
+                break;
+            case "year":
+                stat = await Stats.find({date: {$gte: year}})
+                break;
+            default:
+                stat = await Stats.findOne({date: getToday()})
+                break;
+        }
+        
+        return stat
+    } catch (error) {
+        console.error('[getStats error]', error)
+        throw error
+    }
+}

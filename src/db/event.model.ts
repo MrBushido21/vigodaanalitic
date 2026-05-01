@@ -5,7 +5,7 @@ const eventSchema = new mongoose.Schema({
     visitorId: String,     // ссылка на посетителя                                                               
     type: {                // тип события: "click" / "scroll" / "cart_add" / "cart_remove"
         type:String,
-        enum: ["click", "scroll", "cart_add", "cart_remove"]
+        enum: ["click", "scroll", "cart_add", "cart_remove", "search"]
     },         
     url: String,           // на какой странице произошло
     payload: String,       // доп. данные (например какой товар добавил в корзину)

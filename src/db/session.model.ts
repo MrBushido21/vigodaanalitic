@@ -1,16 +1,17 @@
 import mongoose from "mongoose";
 const sessionSchema = new mongoose.Schema({
-    visitorId: String, //UUID из cookie (кто пришёл)
+    visitorId: { type: String, index: true }, //UUID из cookie (кто пришёл)
     startTime: Date,  //когда зашёл
     endTime: Date,    //когда ушёл
     duration: Number,   //длительность в секундах
     isBot: Boolean, //флаг бот/не бот
+    lastActivity: Date, 
     location: { //Локация :
         country: String,
         city: String
     },
     device: {   //устройство (вложенные объекты)
-        type: String,
+        type: { type: String },
         os: String,
         browser: String
     },
