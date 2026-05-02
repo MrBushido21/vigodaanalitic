@@ -2,14 +2,19 @@ import { Router } from "express"
 import type { Request, Response } from "express"
 import { auth } from "../middleware/auth.middleware"
 import { getCurrentOnline, getDevices, getFunnel, getSources, getStats, getVisitors } from "../services/track.service"
+import { Stats } from "../db/stats.model"
+import { getToday } from "../utils/utils"
 import type { StatsPeriod } from "../services/track.service"
 
 const router = Router()
 
 router.get('/analytics/online', auth, async (req: Request, res: Response) => {
     try {
-        const online = await getCurrentOnline()
-        return res.status(200).json({ online })
+        const [online, todayStats] = await Promise.all([
+            getCurrentOnline(),
+            Stats.findOne({ date: getToday() }, { onlinePick: 1 })
+        ])
+        return res.status(200).json({ online, onlinePick: todayStats?.onlinePick ?? 0 })
     } catch (error) {
         return res.status(500).json({ error: 'Internal server error' })
     }

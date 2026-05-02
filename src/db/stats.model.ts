@@ -13,7 +13,7 @@ const statsSchema = new mongoose.Schema({
         count: { type: Number, default: 0 } //количество посещений за день
     }],
     onlineNow: { type: Number, default: 0 },         //текущий онлайн
-
+    onlinePick: {type: Number, default: 0}, // Пиковый онлайн
     orders: {         //заказы
       total: { type: Number, default: 0 },
       confirmed: { type: Number, default: 0 },

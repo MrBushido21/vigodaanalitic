@@ -19,9 +19,10 @@ export const EventSchema = z.object({
     body: z.object({
         visitorId: z.string().min(1, { message: 'visitorId не должен быть пустым' }),
         sessionId: z.string().min(1, { message: 'sessionId не должен быть пустым' }),
-        type: z.enum(["click", "scroll", "cart_add", "cart_remove", "search"], { message: 'Неверный тип события' }),
+        type: z.enum(["click", "scroll", "cart_add", "cart_remove", "search", "checkout_click", "order_submit"], { message: 'Неверный тип события' }),
         url: z.string().min(1, { message: 'url не должен быть пустым' }),
-        payload: z.string().optional().default('')
+        payload: z.string().optional().default(''),
+        data: z.record(z.string(), z.any()).optional()
     })
 });
 

@@ -35,6 +35,12 @@ cron.schedule('*/5 * * * *', async () => {
             .sort((a, b) => b.count - a.count)
             .slice(0, 10)
 
+        const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000)
+        const onlineNow = await Sessions.countDocuments({ lastActivity: { $gte: fiveMinutesAgo } })
+
+        const existing = await Stats.findOne({ date: today })
+        const onlinePick = onlineNow > (existing?.onlinePick ?? 0) ? onlineNow : (existing?.onlinePick ?? 0)
+
         await Stats.findOneAndUpdate(
             { date: today },
             {
@@ -45,7 +51,9 @@ cron.schedule('*/5 * * * *', async () => {
                     returningVisitors,
                     avgDuration,
                     pageViews: pages.length,
-                    topPages
+                    topPages,
+                    onlineNow,
+                    onlinePick
                 }
             },
             { upsert: true, returnDocument: 'after' }

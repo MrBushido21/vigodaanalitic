@@ -157,7 +157,17 @@ export const getDevices = async () => {
 export const getFunnel = async () => {
     const productViews = await Sessions.countDocuments({ 'pages.url': /^\/product\// })
     const cartAdds = await Events.countDocuments({ type: 'cart_add' })
+    const checkoutClicks = await Events.countDocuments({ type: 'checkout_click' })
     const checkouts = await Sessions.countDocuments({ 'pages.url': '/order' })
+
+    const orderSubmitRaw = await Events.aggregate([
+        { $match: { type: 'order_submit' } },
+        { $group: { _id: '$data.status', count: { $sum: 1 } } }
+    ])
+    const orderSubmits = { success: 0, validation: 0, error: 0 }
+    for (const row of orderSubmitRaw) {
+        if (row._id in orderSubmits) orderSubmits[row._id as keyof typeof orderSubmits] = row.count
+    }
 
     const topClicked = await Sessions.aggregate([
         { $unwind: '$pages' },
@@ -168,6 +178,14 @@ export const getFunnel = async () => {
         { $project: { _id: 0, url: '$_id', count: 1 } }
     ])
 
+    const topCartItems = await Events.aggregate([
+        { $match: { type: 'cart_add', 'data.name': { $exists: true } } },
+        { $group: { _id: { name: '$data.name', color: '$data.color' }, count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+        { $limit: 10 },
+        { $project: { _id: 0, name: '$_id.name', color: '$_id.color', count: 1 } }
+    ])
+
     const topSearches = await Events.aggregate([
         { $match: { type: 'search', payload: { $exists: true, $ne: '' } } },
         { $group: { _id: '$payload', count: { $sum: 1 } } },
@@ -176,7 +194,7 @@ export const getFunnel = async () => {
         { $project: { _id: 0, query: '$_id', count: 1 } }
     ])
 
-    return { productViews, cartAdds, checkouts, topClicked, topSearches }
+    return { productViews, cartAdds, checkoutClicks, checkouts, orderSubmits, topClicked, topCartItems, topSearches }
 }
 
 export type StatsPeriod = 'today' | 'week' | 'month' | 'year'
